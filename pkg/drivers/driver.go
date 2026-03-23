@@ -23,9 +23,10 @@ import (
 )
 
 const (
-	Docker = "docker"
-	Tar    = "tar"
-	Host   = "host"
+	Docker   = "docker"
+	Tar      = "tar"
+	Host     = "host"
+	KubeDock = "kubedock"
 )
 
 type DriverConfig struct {
@@ -71,6 +72,8 @@ func InitDriverImpl(driver string) func(DriverConfig) (Driver, error) {
 		return NewTarDriver
 	case Host:
 		return NewHostDriver
+	case KubeDock:
+		return NewKubeDockDriver
 	default:
 		return nil
 	}
