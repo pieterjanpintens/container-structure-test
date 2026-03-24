@@ -96,11 +96,14 @@ func NewCmdTest(out io.Writer) *cobra.Command {
 
 func run(out io.Writer) error {
 	args = &drivers.DriverConfig{
-		Image:    opts.ImagePath,
-		Save:     opts.Save,
-		Metadata: opts.Metadata,
-		Runtime:  opts.Runtime,
-		Platform: opts.Platform,
+		Image:         opts.ImagePath,
+		Save:          opts.Save,
+		Metadata:      opts.Metadata,
+		Runtime:       opts.Runtime,
+		Platform:      opts.Platform,
+		Namespace:     opts.Namespace,
+		PodnamePrefix: opts.PodnamePrefix,
+		AllowReuse:    opts.AllowReuse,
 	}
 
 	var err error
@@ -247,6 +250,9 @@ func AddTestFlags(cmd *cobra.Command) {
 	cmd.Flags().VarP(&opts.Output, "output", "o", "output format for the test report (available format: text, json, junit)")
 	cmd.Flags().BoolVar(&opts.NoColor, "no-color", false, "no color in the output")
 	cmd.Flags().StringVar(&opts.JunitSuiteName, "junit-suite-name", "", fmt.Sprintf("name to use for the junit test suite (defaults to '%s')", output.DefaultJunitSuiteName))
+	cmd.Flags().StringVar(&opts.Namespace, "namespace", "", "namespace to use with kubernetes driver")
+	cmd.Flags().StringVar(&opts.PodnamePrefix, "podname-prefix", "", "podname prefix to use with kubernetes driver")
+	cmd.Flags().BoolVar(&opts.AllowReuse, "allow-reuse", false, "if set, reuse the running pod for multiple tests, this is a lot faster but test can interfere with each other. Use with kubernetes driver")
 
 	cmd.Flags().StringArrayVarP(&opts.ConfigFiles, "config", "c", []string{}, "test config files")
 	cmd.MarkFlagRequired("config")
