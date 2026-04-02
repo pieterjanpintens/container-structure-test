@@ -96,17 +96,13 @@ func NewCmdTest(out io.Writer) *cobra.Command {
 
 func run(out io.Writer) error {
 	args = &drivers.DriverConfig{
-		Image:         opts.ImagePath,
-		Save:          opts.Save,
-		Metadata:      opts.Metadata,
-		Runtime:       opts.Runtime,
-		Platform:      opts.Platform,
-		Namespace:     opts.Namespace,
-		PodnamePrefix: opts.PodnamePrefix,
-		AllowReuse:    opts.AllowReuse,
-		Labels:        opts.Labels,
-		Annotations:   opts.Annotations,
-		NodeSelector:  opts.NodeSelector,
+		Image:       opts.ImagePath,
+		Save:        opts.Save,
+		Metadata:    opts.Metadata,
+		Runtime:     opts.Runtime,
+		Platform:    opts.Platform,
+		PodTemplate: opts.PodTemplate,
+		AllowReuse:  opts.AllowReuse,
 	}
 
 	var err error
@@ -253,12 +249,8 @@ func AddTestFlags(cmd *cobra.Command) {
 	cmd.Flags().VarP(&opts.Output, "output", "o", "output format for the test report (available format: text, json, junit)")
 	cmd.Flags().BoolVar(&opts.NoColor, "no-color", false, "no color in the output")
 	cmd.Flags().StringVar(&opts.JunitSuiteName, "junit-suite-name", "", fmt.Sprintf("name to use for the junit test suite (defaults to '%s')", output.DefaultJunitSuiteName))
-	cmd.Flags().StringVar(&opts.Namespace, "namespace", "", "namespace to use with kubernetes driver")
-	cmd.Flags().StringVar(&opts.PodnamePrefix, "podname-prefix", "", "podname prefix to use with kubernetes driver")
+	cmd.Flags().StringVar(&opts.PodTemplate, "pod-template", "", "pod template to instantiate pods from with kubernetes driver")
 	cmd.Flags().BoolVar(&opts.AllowReuse, "allow-reuse", false, "if set, reuse the running pod for multiple tests, this is a lot faster but test can interfere with each other. Use with kubernetes driver")
-	cmd.Flags().StringArrayVarP(&opts.Labels, "labels", "", []string{}, "labels for k8es resources")
-	cmd.Flags().StringArrayVarP(&opts.Annotations, "annotations", "", []string{}, "annotations for k8es resources")
-	cmd.Flags().StringArrayVarP(&opts.NodeSelector, "node-selector", "", []string{}, "node selector for k8es resources")
 	cmd.Flags().StringArrayVarP(&opts.ConfigFiles, "config", "c", []string{}, "test config files")
 	cmd.MarkFlagRequired("config")
 	cmd.Flags().StringVar(&opts.TestReport, "test-report", "", "generate test report and write it to specified file (supported format: json, junit; default: json)")

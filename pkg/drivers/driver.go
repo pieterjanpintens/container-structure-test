@@ -39,9 +39,7 @@ type DriverConfig struct {
 	Namespace     string
 	PodnamePrefix string
 	AllowReuse    bool
-	Labels        []string
-	Annotations   []string
-	NodeSelector  []string
+	PodTemplate   string
 }
 
 type Driver interface {

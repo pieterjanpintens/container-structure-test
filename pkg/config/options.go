@@ -36,11 +36,7 @@ type StructureTestOptions struct {
 	Quiet          bool
 	Force          bool
 	NoColor        bool
+	AllowReuse     bool
 
-	Namespace     string
-	PodnamePrefix string
-	AllowReuse    bool
-	Labels        []string
-	Annotations   []string
-	NodeSelector  []string
+	PodTemplate string
 }

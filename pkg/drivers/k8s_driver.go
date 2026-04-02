@@ -40,19 +40,33 @@ import (
 	kexec "k8s.io/client-go/util/exec"
 )
 
+// PodFromFile will read a given file with pod definition and returns a corev1.Pod
+// accordingly.
+func PodFromFile(file string) (*corev1.Pod, error) {
+	decode := scheme.Codecs.UniversalDeserializer().Decode
+	stream, err := os.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	obj, gvk, err := decode(stream, nil, nil)
+	if err != nil {
+		return nil, err
+	}
+	if gvk.Kind == "Pod" {
+		return obj.(*corev1.Pod), nil
+	}
+	return nil, fmt.Errorf("invalid podtemplate: %s", file)
+}
+
 type K8sDriver struct {
-	Image         string
-	Client        kubernetes.Interface
-	runOpts       unversioned.ContainerRunOptions
-	KubeConfig    *rest.Config
-	Namespace     string
-	Labels        map[string]string
-	Annotations   map[string]string
-	NodeSelector  map[string]string
-	PodnamePrefix string
-	podName       string
-	AllowReuse    bool
-	env           []unversioned.EnvVar
+	Image       string
+	Client      kubernetes.Interface
+	runOpts     unversioned.ContainerRunOptions
+	KubeConfig  *rest.Config
+	PodTemplate *corev1.Pod
+	podName     string
+	AllowReuse  bool
+	env         []unversioned.EnvVar
 }
 
 func NewK8sDriver(args DriverConfig) (Driver, error) {
@@ -82,18 +96,19 @@ func NewK8sDriver(args DriverConfig) (Driver, error) {
 		return nil, err
 	}
 
+	template, err := PodFromFile(args.PodTemplate)
+	if err != nil {
+		return nil, err
+	}
+
 	return &K8sDriver{
-		Client:        clientset,
-		Image:         args.Image,
-		runOpts:       args.RunOpts,
-		PodnamePrefix: args.PodnamePrefix,
-		Namespace:     args.Namespace,
-		Labels:        convertSliceToMap(args.Labels),
-		Annotations:   convertSliceToMap(args.Annotations),
-		NodeSelector:  convertSliceToMap(args.NodeSelector),
-		KubeConfig:    k8sConfig,
-		AllowReuse:    args.AllowReuse,
-		podName:       "",
+		Client:      clientset,
+		Image:       args.Image,
+		runOpts:     args.RunOpts,
+		PodTemplate: template,
+		KubeConfig:  k8sConfig,
+		AllowReuse:  args.AllowReuse,
+		podName:     "",
 	}, nil
 }
 
@@ -117,7 +132,7 @@ func (d *K8sDriver) SetEnv(envVars []unversioned.EnvVar) error {
 
 func (d *K8sDriver) ProcessCommand(envVars []unversioned.EnvVar, fullCommand []string) (string, string, int, error) {
 	if !d.AllowReuse || d.podName == "" {
-		logrus.Info("k8s driver creating pod")
+		logrus.Infof("k8s driver creating pod in namespace %s", d.PodTemplate.ObjectMeta.Namespace)
 		allEnvs := append(d.env, envVars...)
 		// create a pod that waits
 		pod, err := d.createPod(allEnvs, []string{"sleep", "99999"})
@@ -293,7 +308,7 @@ func (d *K8sDriver) Destroy() {
 	if d.podName == "" {
 		return
 	}
-	err := d.Client.CoreV1().Pods(d.Namespace).Delete(context.Background(), d.podName, metav1.DeleteOptions{})
+	err := d.Client.CoreV1().Pods(d.PodTemplate.Namespace).Delete(context.Background(), d.podName, metav1.DeleteOptions{})
 	if err != nil {
 		logrus.Warnf("Error when removing pod %s: %s", d.podName, err.Error())
 	}
@@ -301,14 +316,7 @@ func (d *K8sDriver) Destroy() {
 }
 
 func (d *K8sDriver) createPod(envVars []unversioned.EnvVar, command []string) (*corev1.Pod, error) {
-	podName := d.PodnamePrefix
-	if podName == "" {
-		podName = "cst"
-	}
-	// store the name for later reference
-	d.podName = podName + "-" + rand.String(5)
-	image := d.Image
-
+	// create env vars
 	var env []corev1.EnvVar
 	for _, envVar := range envVars {
 		env = append(env, corev1.EnvVar{
@@ -317,33 +325,28 @@ func (d *K8sDriver) createPod(envVars []unversioned.EnvVar, command []string) (*
 		})
 	}
 
-	pod := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:        d.podName,
-			Namespace:   d.Namespace,
-			Labels:      d.Labels,
-			Annotations: d.Annotations,
-		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:            "main",
-					Image:           image,
-					Command:         command,
-					Env:             env,
-					ImagePullPolicy: corev1.PullAlways,
-				},
-			},
-			RestartPolicy: corev1.RestartPolicyNever,
-			NodeSelector:  d.NodeSelector,
+	// take the template, make a copy and overwrite some fields
+	pod := d.PodTemplate.DeepCopy()
+	pod.ObjectMeta.Name = pod.ObjectMeta.Name + "-" + rand.String(5)
+	pod.Spec.Containers = []corev1.Container{
+		{
+			Name:            "main",
+			Image:           d.Image,
+			Command:         command,
+			Env:             env,
+			ImagePullPolicy: corev1.PullAlways,
 		},
 	}
+	pod.Spec.RestartPolicy = corev1.RestartPolicyNever
 
-	return d.Client.CoreV1().Pods(d.Namespace).Create(context.Background(), pod, metav1.CreateOptions{})
+	// store the name for later reference
+	d.podName = pod.ObjectMeta.Name
+
+	return d.Client.CoreV1().Pods(pod.Namespace).Create(context.Background(), pod, metav1.CreateOptions{})
 }
 
 func (d *K8sDriver) waitForPod() error {
-	watcher, err := d.Client.CoreV1().Pods(d.Namespace).Watch(context.Background(), metav1.ListOptions{
+	watcher, err := d.Client.CoreV1().Pods(d.PodTemplate.Namespace).Watch(context.Background(), metav1.ListOptions{
 		FieldSelector: "metadata.name=" + d.podName,
 	})
 	if err != nil {
@@ -370,7 +373,7 @@ func (d *K8sDriver) execInPod(command []string) (string, string, int, error) {
 	req := d.Client.CoreV1().RESTClient().Post().
 		Resource("pods").
 		Name(d.podName).
-		Namespace(d.Namespace).
+		Namespace(d.PodTemplate.Namespace).
 		SubResource("exec").
 		VersionedParams(&corev1.PodExecOptions{
 			Command:   command,
