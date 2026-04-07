@@ -102,7 +102,6 @@ func run(out io.Writer) error {
 		Runtime:     opts.Runtime,
 		Platform:    opts.Platform,
 		PodTemplate: opts.PodTemplate,
-		AllowReuse:  opts.AllowReuse,
 	}
 
 	var err error
@@ -250,7 +249,6 @@ func AddTestFlags(cmd *cobra.Command) {
 	cmd.Flags().BoolVar(&opts.NoColor, "no-color", false, "no color in the output")
 	cmd.Flags().StringVar(&opts.JunitSuiteName, "junit-suite-name", "", fmt.Sprintf("name to use for the junit test suite (defaults to '%s')", output.DefaultJunitSuiteName))
 	cmd.Flags().StringVar(&opts.PodTemplate, "pod-template", "", "pod template to instantiate pods from with kubernetes driver")
-	cmd.Flags().BoolVar(&opts.AllowReuse, "allow-reuse", false, "if set, reuse the running pod for multiple tests, this is a lot faster but test can interfere with each other. Use with kubernetes driver")
 	cmd.Flags().StringArrayVarP(&opts.ConfigFiles, "config", "c", []string{}, "test config files")
 	cmd.MarkFlagRequired("config")
 	cmd.Flags().StringVar(&opts.TestReport, "test-report", "", "generate test report and write it to specified file (supported format: json, junit; default: json)")

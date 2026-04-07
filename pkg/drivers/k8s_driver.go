@@ -40,11 +40,43 @@ import (
 	kexec "k8s.io/client-go/util/exec"
 )
 
+func findFile(file string) (string, error) {
+	stat, err := os.Stat(file)
+	if err == nil && !stat.IsDir() {
+		return file, nil
+	}
+
+	// fallback to path relative to executable
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		fallbackPath := filepath.Join(exeDir, file)
+		if stat, err := os.Stat(fallbackPath); err == nil && !stat.IsDir() {
+			return fallbackPath, nil
+		}
+	}
+
+	// fallback to user home
+	if homeDir, err := os.UserHomeDir(); err == nil {
+		fallbackPath := filepath.Join(homeDir, file)
+		if stat, err := os.Stat(fallbackPath); err == nil && !stat.IsDir() {
+			return fallbackPath, nil
+		}
+	}
+
+	return "", os.ErrNotExist
+}
+
 // PodFromFile will read a given file with pod definition and returns a corev1.Pod
 // accordingly.
 func PodFromFile(file string) (*corev1.Pod, error) {
 	decode := scheme.Codecs.UniversalDeserializer().Decode
-	stream, err := os.ReadFile(file)
+
+	resolvedPodTemplateFile, err := findFile(file)
+	if err != nil {
+		return nil, err
+	}
+
+	stream, err := os.ReadFile(resolvedPodTemplateFile)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +97,6 @@ type K8sDriver struct {
 	KubeConfig  *rest.Config
 	PodTemplate *corev1.Pod
 	podName     string
-	AllowReuse  bool
 	env         []unversioned.EnvVar
 }
 
@@ -107,21 +138,15 @@ func NewK8sDriver(args DriverConfig) (Driver, error) {
 		runOpts:     args.RunOpts,
 		PodTemplate: template,
 		KubeConfig:  k8sConfig,
-		AllowReuse:  args.AllowReuse,
 		podName:     "",
 	}, nil
 }
 
 func (d *K8sDriver) Setup(envVars []unversioned.EnvVar, fullCommands [][]string) error {
-	// Pod creation will be handled in ProcessCommand
-	logrus.Info("k8s driver setup, no pod created yet")
 	return nil
 }
 
 func (d *K8sDriver) Teardown(fullCommands [][]string) error {
-	if d.AllowReuse && d.podName != "" {
-		d.Destroy()
-	}
 	return nil
 }
 
@@ -131,7 +156,7 @@ func (d *K8sDriver) SetEnv(envVars []unversioned.EnvVar) error {
 }
 
 func (d *K8sDriver) ProcessCommand(envVars []unversioned.EnvVar, fullCommand []string) (string, string, int, error) {
-	if !d.AllowReuse || d.podName == "" {
+	if d.podName == "" {
 		logrus.Infof("k8s driver creating pod in namespace %s", d.PodTemplate.ObjectMeta.Namespace)
 		allEnvs := append(d.env, envVars...)
 		// create a pod that waits
@@ -139,29 +164,27 @@ func (d *K8sDriver) ProcessCommand(envVars []unversioned.EnvVar, fullCommand []s
 		if err != nil {
 			return "", "", 0, err
 		}
-		d.podName = pod.Name
-
-		if !d.AllowReuse {
-			defer d.Destroy()
-		}
 
 		// Wait for the pod to be running
 		err = d.waitForPod()
 		if err != nil {
 			return "", "", 0, err
 		}
+
+		d.podName = pod.Name
+		logrus.Infof("k8s driver created pod %s in namespace %s", d.podName, d.PodTemplate.ObjectMeta.Namespace)
 	}
 
 	return d.execInPod(fullCommand)
 }
 
 func (d *K8sDriver) StatFile(path string) (os.FileInfo, error) {
-	// A better approach would be to have a long-running pod and exec into it.
 	command := []string{"stat", "-c", "%n,%s,%F,%a,%u,%g", path}
 	stdout, _, _, err := d.ProcessCommand(nil, command)
 	if err != nil {
 		return nil, err
 	}
+
 	parts := strings.Split(strings.TrimSpace(stdout), ",")
 	if len(parts) != 6 {
 		return nil, fmt.Errorf("unexpected output from stat: %s", stdout)
@@ -183,9 +206,20 @@ func (d *K8sDriver) StatFile(path string) (os.FileInfo, error) {
 	}
 
 	// Use bitSize 32 because os.FileMode is a uint32
-	fileMode, err := strconv.ParseUint(parts[3], 8, 32)
+	fileMode64, err := strconv.ParseUint(parts[3], 8, 32)
 	if err != nil {
 		return nil, err
+	}
+
+	fileMode := os.FileMode(fileMode64)
+
+	// Manually map the Linux special bits to Go constants
+	if fileMode64&01000 != 0 { // Linux Sticky Bit
+		fileMode |= os.ModeSticky
+	}
+
+	if isDir {
+		fileMode |= os.ModeDir
 	}
 
 	return &fileInfo{
@@ -194,7 +228,7 @@ func (d *K8sDriver) StatFile(path string) (os.FileInfo, error) {
 		isDir:    isDir,
 		uid:      uid,
 		gid:      gid,
-		fileMode: os.FileMode(fileMode),
+		fileMode: fileMode,
 	}, nil
 }
 
@@ -224,10 +258,20 @@ func (fi *fileInfo) IsDir() bool {
 	return fi.isDir
 }
 func (fi *fileInfo) Sys() interface{} {
-	return &tar.Header{
-		Uid: int(fi.uid),
-		Gid: int(fi.gid),
+	hdr := &tar.Header{
+		Name:    fi.name,
+		Size:    fi.size,
+		Mode:    int64(fi.fileMode),
+		Uid:     int(fi.uid),
+		Gid:     int(fi.gid),
+		ModTime: fi.ModTime(),
 	}
+	if fi.isDir {
+		hdr.Typeflag = tar.TypeDir
+	} else {
+		hdr.Typeflag = tar.TypeReg
+	}
+	return hdr
 }
 
 func (d *K8sDriver) ReadFile(path string) ([]byte, error) {
@@ -305,7 +349,12 @@ func (d *K8sDriver) GetConfig() (unversioned.Config, error) {
 }
 
 func (d *K8sDriver) Destroy() {
+	d.stopPod()
+}
+
+func (d *K8sDriver) stopPod() {
 	if d.podName == "" {
+		logrus.Info("k8s driver no pod defined, nothing to clean")
 		return
 	}
 	err := d.Client.CoreV1().Pods(d.PodTemplate.Namespace).Delete(context.Background(), d.podName, metav1.DeleteOptions{})
@@ -313,6 +362,7 @@ func (d *K8sDriver) Destroy() {
 		logrus.Warnf("Error when removing pod %s: %s", d.podName, err.Error())
 	}
 	d.podName = ""
+	logrus.Infof("Stopped pod %s", d.podName)
 }
 
 func (d *K8sDriver) createPod(envVars []unversioned.EnvVar, command []string) (*corev1.Pod, error) {
@@ -368,7 +418,6 @@ func (d *K8sDriver) waitForPod() error {
 }
 
 func (d *K8sDriver) execInPod(command []string) (string, string, int, error) {
-
 	// TTY must be false to keep stdout and stderr separate
 	req := d.Client.CoreV1().RESTClient().Post().
 		Resource("pods").
@@ -404,6 +453,8 @@ func (d *K8sDriver) execInPod(command []string) (string, string, int, error) {
 			panic(err) // Connection or protocol error
 		}
 	}
+
+	logrus.Infof("Executed command %v in %s", command, d.podName)
 
 	return stdout.String(), stderr.String(), exitCode, nil
 }
