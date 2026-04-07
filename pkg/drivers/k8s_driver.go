@@ -156,7 +156,6 @@ func (d *K8sDriver) ProcessCommand(envVars []unversioned.EnvVar, fullCommand []s
 }
 
 func (d *K8sDriver) StatFile(path string) (os.FileInfo, error) {
-	// A better approach would be to have a long-running pod and exec into it.
 	command := []string{"stat", "-c", "%n,%s,%F,%a,%u,%g", path}
 	stdout, _, _, err := d.ProcessCommand(nil, command)
 	if err != nil {
@@ -183,9 +182,13 @@ func (d *K8sDriver) StatFile(path string) (os.FileInfo, error) {
 	}
 
 	// Use bitSize 32 because os.FileMode is a uint32
-	fileMode, err := strconv.ParseUint(parts[3], 8, 32)
+	fileMode64, err := strconv.ParseUint(parts[3], 8, 32)
 	if err != nil {
 		return nil, err
+	}
+	fileMode := os.FileMode(fileMode64)
+	if isDir {
+		fileMode |= os.ModeDir
 	}
 
 	return &fileInfo{
@@ -194,7 +197,7 @@ func (d *K8sDriver) StatFile(path string) (os.FileInfo, error) {
 		isDir:    isDir,
 		uid:      uid,
 		gid:      gid,
-		fileMode: os.FileMode(fileMode),
+		fileMode: fileMode,
 	}, nil
 }
 
@@ -224,10 +227,20 @@ func (fi *fileInfo) IsDir() bool {
 	return fi.isDir
 }
 func (fi *fileInfo) Sys() interface{} {
-	return &tar.Header{
-		Uid: int(fi.uid),
-		Gid: int(fi.gid),
+	hdr := &tar.Header{
+		Name:    fi.name,
+		Size:    fi.size,
+		Mode:    int64(fi.fileMode),
+		Uid:     int(fi.uid),
+		Gid:     int(fi.gid),
+		ModTime: fi.ModTime(),
 	}
+	if fi.isDir {
+		hdr.Typeflag = tar.TypeDir
+	} else {
+		hdr.Typeflag = tar.TypeReg
+	}
+	return hdr
 }
 
 func (d *K8sDriver) ReadFile(path string) ([]byte, error) {
